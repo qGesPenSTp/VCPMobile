@@ -673,6 +673,32 @@ Denies the pick_file command without any pre-configured scope.
 <tr>
 <td>
 
+`vcp-mobile:allow-pick-files`
+
+</td>
+<td>
+
+Enables the pick_files command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vcp-mobile:deny-pick-files`
+
+</td>
+<td>
+
+Denies the pick_files command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vcp-mobile:allow-register-shared-files`
 
 </td>

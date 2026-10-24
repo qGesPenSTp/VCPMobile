@@ -14,6 +14,7 @@
     "vcp-mobile:allow-request-power-management-permission",
     "vcp-mobile:allow-get-free-disk-space",
     "vcp-mobile:allow-pick-file",
+    "vcp-mobile:allow-pick-files",
     "vcp-mobile:allow-get-battery-status",
     "vcp-mobile:allow-open-file-native",
     "vcp-mobile:allow-save-image-to-gallery",

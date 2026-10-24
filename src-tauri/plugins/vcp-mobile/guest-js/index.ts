@@ -31,6 +31,17 @@ export function pickFile(mode?: PickFileMode): Promise<PickedFile> {
   return invoke<PickedFile>('plugin:vcp-mobile|pick_file', mode ? { mode } : undefined);
 }
 
+export interface PickedFilesResult {
+  requestId: string;
+  files: PickedFile[];
+  failures: { index: number; error: string }[];
+  cancelled: boolean;
+}
+
+export function pickFiles(mode: 'file' | 'gallery', requestId: string): Promise<PickedFilesResult> {
+  return invoke<PickedFilesResult>('plugin:vcp-mobile|pick_files', { mode, requestId });
+}
+
 export function deleteTempFile(filePath: string): Promise<void> {
   return invoke('plugin:vcp-mobile|delete_temp_file', { filePath });
 }

@@ -441,6 +441,49 @@ pub fn pick_file<R: Runtime>(
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PickedFileFailure {
+    pub index: usize,
+    pub error: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedFilesResult {
+    pub request_id: String,
+    pub files: Vec<PickedFileInfo>,
+    pub failures: Vec<PickedFileFailure>,
+    pub cancelled: bool,
+}
+
+#[tauri::command(async)]
+pub fn pick_files<R: Runtime>(
+    app: AppHandle<R>,
+    mode: Option<String>,
+    request_id: String,
+) -> Result<PickedFilesResult, String> {
+    let mode = mode.unwrap_or_else(|| "file".to_string());
+    if !matches!(mode.as_str(), "gallery" | "file") {
+        return Err("多选只支持相册或文件".to_string());
+    }
+    #[cfg(target_os = "android")]
+    {
+        let state = app.state::<VcpMobileState<R>>();
+        state.mobile_plugin_handle()?
+            .run_mobile_plugin::<PickedFilesResult>(
+                "pickFiles",
+                serde_json::json!({ "mode": mode, "requestId": request_id }),
+            )
+            .map_err(|e| format!("run_mobile_plugin failed: {}", e))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, mode, request_id);
+        Err("多选原生适配目前仅在 Android 可用".to_string())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BatteryStatus {
     pub level: Option<i32>,
     pub is_power_save_mode: bool,

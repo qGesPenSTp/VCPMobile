@@ -72,6 +72,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             system::check_auto_start_permission,
             system::get_free_disk_space,
             system::pick_file,
+            system::pick_files,
             system::get_battery_status,
             system::get_network_status,
             system::open_file_native,

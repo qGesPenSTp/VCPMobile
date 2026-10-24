@@ -1453,6 +1453,64 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    @Command
+    fun pickFiles(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(PickFileArgs::class.java)
+            require(args.requestId.matches(Regex("[A-Za-z0-9_-]{1,80}"))) { "Invalid picker request id" }
+            startActivityForResult(invoke, multiPickerIntent(args.mode), "onPickFilesResult")
+        } catch (e: Exception) {
+            invoke.reject("Failed to start multiple file picker: ${e.message}")
+        }
+    }
+
+    @ActivityCallback
+    fun onPickFilesResult(invoke: Invoke, result: ActivityResult) {
+        val args = invoke.parseArgs(PickFileArgs::class.java)
+        val files = JSArray()
+        val failures = JSArray()
+        val cancelled = result.resultCode != Activity.RESULT_OK
+        fun finish() {
+            val batch = JSObject().apply {
+                put("requestId", args.requestId)
+                put("files", files)
+                put("failures", failures)
+                put("cancelled", cancelled)
+            }
+            val safe = escapeJsonForJsString(batch.toString())
+            activity.runOnUiThread {
+                webViewRef?.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('vcp-mobile-files-picked', {detail: JSON.parse(\"$safe\")}))", null
+                )
+            }
+            invoke.resolve(batch)
+        }
+        if (cancelled) {
+            finish()
+            return
+        }
+        val uris = selectedPickerUris(result.data)
+        executePluginTask(executorDomains.fileIoExecutor, invoke, "processPickedFiles") {
+            for ((index, uri) in uris.withIndex()) {
+                if (isDestroying.get() || Thread.currentThread().isInterrupted) {
+                    throw InterruptedException("File selection was interrupted")
+                }
+                try {
+                    files.put(processPickedUri(invoke, uri, emitEvents = false))
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw e
+                } catch (e: Exception) {
+                    failures.put(JSObject().apply {
+                        put("index", index)
+                        put("error", e.message ?: "File processing failed")
+                    })
+                }
+            }
+            finish()
+        }
+    }
+
     @ActivityCallback
     fun onCameraResult(invoke: Invoke, result: ActivityResult) {
         if (result.resultCode != Activity.RESULT_OK) {
@@ -1569,7 +1627,17 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
             return
         }
 
-        executePluginTask(executorDomains.fileIoExecutor, invoke, "processPickedFile", fileTask@{
+        executePluginTask(executorDomains.fileIoExecutor, invoke, "processPickedFile") {
+            try {
+                invoke.resolve(processPickedUri(invoke, uri))
+            } catch (e: Throwable) {
+                invoke.reject("Handling picked file failed: ${e.message}")
+            }
+        }
+    }
+
+    // 单选与批量选择共享 staging、转码及清理所有权，不复制媒体处理管线。
+    private fun processPickedUri(invoke: Invoke, uri: Uri, emitEvents: Boolean = true): JSObject {
             var currentTempFile: java.io.File? = null
             var currentTranscodeSourceFile: java.io.File? = null
             var currentThumbnailFile: java.io.File? = null
@@ -1598,7 +1666,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 Log.i(TAG, "[onPickFileResult] Processing picked file: $originalName (size=$size, mime=$mimeType)")
 
                 // 3. 发送预准备事件给前端，让前端立即创建进度卡片
-                if (!isAvatarMode) {
+                if (!isAvatarMode && emitEvents) {
                     val startDetail = JSObject().apply {
                         put("name", originalName)
                         put("size", size)
@@ -1619,8 +1687,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 contentResolver.openInputStream(uri).use { inputStream ->
                     if (inputStream == null) {
                         Log.e(TAG, "[onPickFileResult] openInputStream returned null")
-                        invoke.reject("Could not open input stream")
-                        return@fileTask
+                        throw java.io.IOException("Could not open input stream")
                     }
                     java.io.FileOutputStream(tempFile).use { outputStream ->
                         val buffer = ByteArray(65536)
@@ -1634,7 +1701,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                             totalRead += bytesRead
                             
                             val now = System.currentTimeMillis()
-                            if (!isAvatarMode && now - lastReportTime > 200) {
+                            if (!isAvatarMode && emitEvents && now - lastReportTime > 200) {
                                 lastReportTime = now
                                 val progress = if (size > 0) ((totalRead.toDouble() / size) * 100).toInt() else 0
                                 val progressDetail = JSObject().apply {
@@ -1864,9 +1931,8 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                         put("hash", avatarHash)
                         put("thumbnailPath", org.json.JSONObject.NULL)
                     }
-                    invoke.resolve(avatarResult)
                     currentAvatarWorkFile = null
-                    return@fileTask
+                    return avatarResult
                 }
 
                 // 4. 图片资源触发 Native 硬件加速缩略图硬解
@@ -1891,7 +1957,7 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 Log.i(TAG, "[onPickFileResult] File copy & process complete: path=${ownedFinalTempFile.absolutePath}, hash=$hash")
                 
                 // 双轨通信：主动推送最终结果给前端，穿透 JNI 断裂层
-                if (!isAvatarMode) {
+                if (!isAvatarMode && emitEvents) {
                     val pickedDetail = JSObject().apply {
                         put("path", ownedFinalTempFile.absolutePath)
                         put("name", originalName)
@@ -1911,9 +1977,9 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
                 
-                invoke.resolve(resultObject)
                 currentTempFile = null
                 currentThumbnailFile = null
+                return resultObject
             } catch (e: Throwable) {
                 Log.e(TAG, "[onPickFileResult] File pick handling failed", e)
                 try {
@@ -1922,9 +1988,8 @@ class VcpMobilePlugin(private val activity: Activity) : Plugin(activity) {
                     currentThumbnailFile?.delete()
                     currentAvatarWorkFile?.delete()
                 } catch (_: Exception) {}
-                invoke.reject("Handling picked file failed: ${e.message}")
+                throw e
             }
-        })
     }
 
     private fun generateNativeThumbnail(context: Context, originalFile: java.io.File, hash: String): String? {
@@ -3012,6 +3077,7 @@ class VerifyApkSignatureArgs {
 @InvokeArg
 class PickFileArgs {
     var mode: String = "file"
+    var requestId: String = ""
 }
 
 @InvokeArg

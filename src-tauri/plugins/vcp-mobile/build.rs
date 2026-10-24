@@ -17,6 +17,7 @@ const COMMANDS: &[&str] = &[
     "check_auto_start_permission",
     "get_free_disk_space",
     "pick_file",
+    "pick_files",
     "get_battery_status",
     "get_network_status",
     "open_file_native",

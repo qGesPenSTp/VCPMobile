@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useNotificationStore } from "./notification";
 import { isAndroid } from "../utils/platform";
 import type { PickedFile } from "tauri-plugin-vcp-mobile";
+import { pickNativeFiles } from "../utils/nativeMultiPicker";
 import type {
   NativeFileProgressDetail,
   NativeFileStartDetail,
@@ -41,6 +42,69 @@ const checkImageDimensions = (file: File): Promise<{ width: number; height: numb
 export const useAttachmentStore = defineStore("attachment", () => {
   // 暂存的附件列表，准备随下一条消息发送
   const stagedAttachments = ref<Attachment[]>([]);
+  let batchPickerBusy = false;
+
+  const handleNativeBatch = async (mode: "gallery" | "file") => {
+    const notifications = useNotificationStore();
+    try {
+      const batch = await pickNativeFiles(mode);
+      if (batch.cancelled) return;
+      let failed = batch.failures.length;
+      // Append in provider order. A failed item must not discard its siblings.
+      for (const picked of batch.files) {
+        const id = `att_${crypto.randomUUID()}`;
+        try {
+          await invoke("check_attachment_support", { originalName: picked.name });
+          stagedAttachments.value.push({
+            id, type: picked.mime || "application/octet-stream", name: picked.name,
+            size: picked.size, src: picked.thumbnailPath
+              ? convertFileSrc(picked.thumbnailPath)
+              : picked.mime?.startsWith("image/") ? convertFileSrc(picked.path) : "",
+            status: "loading", progress: 90,
+          });
+          await nextTick();
+          const data = await invoke<AttachmentData>("register_local_file", {
+            localPath: picked.path, originalName: picked.name,
+            mimeType: picked.mime || "application/octet-stream",
+            thumbnailPath: picked.thumbnailPath || null, stableId: id,
+            expectedHash: picked.hash || null,
+          });
+          const index = stagedAttachments.value.findIndex((item) => item.id === id);
+          // Removing a pending card is final; completion must not resurrect it.
+          if (index !== -1) {
+            stagedAttachments.value[index] = {
+              ...stagedAttachments.value[index], type: data.type, src: data.internalPath,
+              name: data.name, size: data.size, hash: data.hash,
+              thumbnailPath: data.thumbnailPath ?? undefined, status: "done", progress: undefined,
+            };
+          }
+        } catch {
+          failed++;
+          stagedAttachments.value = stagedAttachments.value.filter((item) => item.id !== id);
+        }
+      }
+      if (failed) notifications.addNotification({
+        type: "warning", title: "部分附件未能添加",
+        message: `${failed} 个附件读取或处理失败，其余附件已保留。`, toastOnly: false,
+      });
+    } catch (error) {
+      notifications.addNotification({
+        type: "warning", title: "选取附件失败", message: String(error), toastOnly: false,
+      });
+    }
+  };
+
+  const handleAttachment = async (mode: "camera" | "gallery" | "file" = "file") => {
+    if (!isAndroid) return handleSingleAttachment(mode);
+    if (batchPickerBusy) return;
+    batchPickerBusy = true;
+    try {
+      if (mode === "camera") await handleSingleAttachment(mode);
+      else await handleNativeBatch(mode);
+    } finally {
+      batchPickerBusy = false;
+    }
+  };
 
   // 全局监听 Rust 端发出的注册进度，用于大文件哈希/移动等Phase 2流程
   listen<AttachmentRegisterProgressDto>("vcp-file-register-progress", (event) => {
@@ -94,7 +158,7 @@ export const useAttachmentStore = defineStore("attachment", () => {
   /**
    * 触发文件选择器并暂存附件；Android 使用原生选择器，其他环境沿用 HTML 导入。
    */
-  const handleAttachment = async (mode: 'camera' | 'gallery' | 'file' = 'file') => {
+  const handleSingleAttachment = async (mode: 'camera' | 'gallery' | 'file' = 'file') => {
     if (mode === 'camera' && !isAndroid) return;
     
     // ==================================================================

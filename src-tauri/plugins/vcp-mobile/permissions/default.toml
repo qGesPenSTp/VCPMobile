@@ -14,6 +14,7 @@ commands.allow = [
     "check_notification_listener_permission",
     "request_notification_listener_permission",
     "pick_file",
+    "pick_files",
     "get_battery_status",
     "get_network_status",
     "open_file_native",
